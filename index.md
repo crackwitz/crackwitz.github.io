@@ -1,7 +1,9 @@
 ## Welcome to GitHub Pages
 
 {% for page in site.pages %}
+{% if page.is_page %}
 - [{{ page.title }}]({{ page.url }})
+{% endif %}
 {% endfor %}
 
 You can use the [editor on GitHub](https://github.com/crackwitz/crackwitz.github.io/edit/master/index.md) to maintain and preview the content for your website in Markdown files.

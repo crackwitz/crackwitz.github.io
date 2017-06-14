@@ -1,5 +1,6 @@
 ---
 title: Projekte
+is_page: true
 ---
 
 # Test

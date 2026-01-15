@@ -107,6 +107,7 @@
         let latchChar = null;
         let bellChar = null;
         let deadlineChar = null;
+        let wakeLock = null;
 
         let serverDeadline = 0;
         let serverNowOnUpdate = 0;
@@ -206,6 +207,9 @@
                 const deadlineVal = await deadlineChar.readValue();
                 processDeadlineValue(deadlineVal);
 
+                // Request Wake Lock to prevent the OS from killing the app
+                requestWakeLock();
+
                 openBtn.disabled = false;
                 connectBtn.textContent = "Verbindung trennen";
                 updateStatus("✅ Verbunden");
@@ -214,38 +218,39 @@
             }
         }
 
-        function onDeadlineNotification(event) {
-            processDeadlineValue(event.target.value);
-        }
-
-        function processDeadlineValue(data) {
-            if (data.byteLength >= 8) {
-                serverDeadline = data.getUint32(0);
-                serverNowOnUpdate = data.getUint32(4);
-                localNowOnUpdate = Date.now();
-                updateCountdown();
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    console.log('Wake Lock is active');
+                    wakeLock.addEventListener('release', () => {
+                        console.log('Wake Lock was released');
+                    });
+                }
+            } catch (err) {
+                console.error(`${err.name}, ${err.message}`);
             }
         }
 
-        function updateCountdown() {
-            if (serverDeadline === 0) {
-                countdownDiv.textContent = "Automatik aus";
-                return;
+        // Auto-reconnect on page load if permission was previously granted
+        window.addEventListener('load', async () => {
+            if ('bluetooth' in navigator && navigator.bluetooth.getDevices) {
+                const devices = await navigator.bluetooth.getDevices();
+                const doorDevice = devices.find(d => d.name === "FSMPI Haustür");
+                if (doorDevice) {
+                    device = doorDevice;
+                    device.addEventListener('gattserverdisconnected', onDisconnected);
+                    reconnect();
+                }
             }
-            const elapsedLocalSecs = (Date.now() - localNowOnUpdate) / 1000;
-            const currentServerTime = serverNowOnUpdate + elapsedLocalSecs;
-            const remaining = Math.max(0, serverDeadline - currentServerTime);
+        });
 
-            if (remaining <= 0) {
-                countdownDiv.textContent = "Automatik aus";
-            } else {
-                const h = Math.floor(remaining / 3600);
-                const m = Math.floor((remaining % 3600) / 60);
-                const s = Math.floor(remaining % 60);
-                countdownDiv.textContent = `Automatik aktiv: ${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+        // Re-request wake lock when page becomes visible again
+        document.addEventListener('visibilitychange', async () => {
+            if (wakeLock !== null && document.visibilityState === 'visible') {
+                requestWakeLock();
             }
-        }
-        setInterval(updateCountdown, 1000);
+        });
 
         async function changeDeadline(code) {
             if (!deadlineChar) return;

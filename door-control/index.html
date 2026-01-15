@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSMPI Haustürsteuerung</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#007bff">
+    <link rel="apple-touch-icon" href="https://via.placeholder.com/192/007bff/ffffff?text=🧁">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+            width: 90%;
+            max-width: 400px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            font-size: 1.2rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 1rem;
+            transition: background-color 0.2s;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        button#openBtn {
+            background-color: #28a745;
+            height: 100px;
+            font-weight: bold;
+        }
+        input {
+            width: 100%;
+            padding: 0.5rem;
+            margin-top: 0.5rem;
+            box-sizing: border-box;
+            text-align: center;
+            font-size: 1rem;
+        }
+        #status {
+            margin-top: 1rem;
+            font-size: 0.9rem;
+            color: #666;
+        }
+        .pulse {
+            animation: pulse-animation 2s infinite;
+        }
+        @keyframes pulse-animation {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧁 Haustür</h1>
+
+        <label for="secret">Passwort</label>
+        <input type="password" id="secret" placeholder="Passwort eingeben">
+
+        <button id="connectBtn">Mit Haustür verbinden</button>
+        <button id="notifyBtn">Benachrichtigungen aktivieren</button>
+
+        <div class="deadline-container" style="margin-top: 1rem; border-top: 1px solid #eee; padding-top: 1rem;">
+            <div id="countdown" style="font-weight: bold; color: #007bff; margin-bottom: 0.5rem;">Automatik aus</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px;">
+                <button onclick="changeDeadline(30)" style="font-size: 0.8rem; padding: 8px;">+30m</button>
+                <button onclick="changeDeadline(60)" style="font-size: 0.8rem; padding: 8px;">+1h</button>
+                <button onclick="changeDeadline(120)" style="font-size: 0.8rem; padding: 8px;">+2h</button>
+            </div>
+            <button id="clearDeadline" onclick="changeDeadline(0)" style="font-size: 0.8rem; padding: 8px; background-color: #6c757d; margin-top: 5px;">Automatik deaktivieren</button>
+        </div>
+
+        <button id="openBtn" disabled>TÜR ÖFFNEN</button>
+
+        <div id="status">Nicht verbunden</div>
+    </div>
+
+    <script>
+        const SERVICE_UUID = "e1c1ee14-96a9-4362-956c-350d74cc220d";
+        const BELL_CHAR_UUID = "72217036-bc4d-4632-9578-052077e64177";
+        const LATCH_CHAR_UUID = "9958732e-5f90-482a-a9a7-47d337a44f4e";
+        const DEADLINE_CHAR_UUID = "85c7608e-5b1b-4f81-998b-70b3a373b9e4";
+
+        let device = null;
+        let server = null;
+        let latchChar = null;
+        let bellChar = null;
+        let deadlineChar = null;
+
+        let serverDeadline = 0;
+        let serverNowOnUpdate = 0;
+        let localNowOnUpdate = 0;
+
+        const connectBtn = document.getElementById('connectBtn');
+        const notifyBtn = document.getElementById('notifyBtn');
+        const openBtn = document.getElementById('openBtn');
+        const secretInput = document.getElementById('secret');
+        const statusDiv = document.getElementById('status');
+        const countdownDiv = document.getElementById('countdown');
+
+        // Check current notification permission
+        if (Notification.permission === 'granted' || Notification.permission === 'denied') {
+            notifyBtn.style.display = 'none';
+        }
+
+        async function requestNotificationPermission() {
+            const permission = await Notification.requestPermission();
+            if (permission === 'granted') {
+                updateStatus("✅ Benachrichtigungen aktiviert");
+                notifyBtn.style.display = 'none';
+            } else if (permission === 'denied') {
+                updateStatus("❌ Benachrichtigungen blockiert");
+                notifyBtn.style.display = 'none';
+            }
+        }
+
+        notifyBtn.addEventListener('click', requestNotificationPermission);
+
+        // Populate secret from URL query
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('secret')) {
+            secretInput.value = urlParams.get('secret');
+        }
+
+        // Register Service Worker for Notification Actions
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', event => {
+                if (event.data === 'trigger-latch') {
+                    console.log("Triggering latch from Service Worker message");
+                    triggerLatch();
+                }
+            });
+            navigator.serviceWorker.register('sw.js').then(reg => {
+                console.log('Service Worker Registered');
+            });
+        }
+
+        async function updateStatus(text) {
+            statusDiv.textContent = text;
+            console.log(text);
+        }
+
+        async function triggerLatch() {
+            if (!latchChar) return;
+            try {
+                const secret = secretInput.value;
+                const encoder = new TextEncoder();
+                await latchChar.writeValue(encoder.encode(secret));
+                updateStatus("Riegel ausgelöst!");
+            } catch (error) {
+                updateStatus("Auslösen fehlgeschlagen: " + error);
+            }
+        }
+
+        async function connect() {
+            try {
+                updateStatus("Gerät suchen...");
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [SERVICE_UUID] }],
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                device.addEventListener('gattserverdisconnected', onDisconnected);
+
+                updateStatus("Verbinde...");
+                server = await device.gatt.connect();
+
+                updateStatus("Lade Dienst...");
+                const service = await server.getPrimaryService(SERVICE_UUID);
+
+                updateStatus("Lade Charakteristiken...");
+                latchChar = await service.getCharacteristic(LATCH_CHAR_UUID);
+                bellChar = await service.getCharacteristic(BELL_CHAR_UUID);
+                deadlineChar = await service.getCharacteristic(DEADLINE_CHAR_UUID);
+
+                // Setup Bell Notifications
+                await bellChar.startNotifications();
+                bellChar.addEventListener('characteristicvaluechanged', onBellNotification);
+
+                // Setup Deadline Notifications
+                await deadlineChar.startNotifications();
+                deadlineChar.addEventListener('characteristicvaluechanged', onDeadlineNotification);
+
+                // Initial read
+                const deadlineVal = await deadlineChar.readValue();
+                processDeadlineValue(deadlineVal);
+
+                openBtn.disabled = false;
+                connectBtn.textContent = "Verbindung trennen";
+                updateStatus("✅ Verbunden");
+            } catch (error) {
+                updateStatus("❌ Fehler: " + error);
+            }
+        }
+
+        function onDeadlineNotification(event) {
+            processDeadlineValue(event.target.value);
+        }
+
+        function processDeadlineValue(data) {
+            if (data.byteLength >= 8) {
+                serverDeadline = data.getUint32(0);
+                serverNowOnUpdate = data.getUint32(4);
+                localNowOnUpdate = Date.now();
+                updateCountdown();
+            }
+        }
+
+        function updateCountdown() {
+            if (serverDeadline === 0) {
+                countdownDiv.textContent = "Automatik aus";
+                return;
+            }
+            const elapsedLocalSecs = (Date.now() - localNowOnUpdate) / 1000;
+            const currentServerTime = serverNowOnUpdate + elapsedLocalSecs;
+            const remaining = Math.max(0, serverDeadline - currentServerTime);
+
+            if (remaining <= 0) {
+                countdownDiv.textContent = "Automatik aus";
+            } else {
+                const h = Math.floor(remaining / 3600);
+                const m = Math.floor((remaining % 3600) / 60);
+                const s = Math.floor(remaining % 60);
+                countdownDiv.textContent = `Automatik aktiv: ${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+            }
+        }
+        setInterval(updateCountdown, 1000);
+
+        async function changeDeadline(code) {
+            if (!deadlineChar) return;
+            try {
+                await deadlineChar.writeValue(new Uint8Array([code]));
+            } catch (e) {
+                updateStatus("Fehler beim Ändern: " + e);
+            }
+        }
+
+        function onBellNotification(event) {
+            const value = event.target.value.getUint8(0);
+
+            const elapsedLocalSecs = (Date.now() - localNowOnUpdate) / 1000;
+            const isDeadlineActive = serverDeadline > (serverNowOnUpdate + elapsedLocalSecs);
+
+            if (value === 0x01) { // Pressed
+                updateStatus("🔔 KLINGEL!");
+                showNotification(isDeadlineActive);
+            } else if (value === 0x02) { // Warning
+                updateStatus("⚠️ Automatik läuft in 5 Min ab!");
+                showWarningNotification();
+            } else {
+                updateStatus("Klingel losgelassen");
+            }
+        }
+
+        function showNotification(isDeadlineActive) {
+            if (!("Notification" in window)) return;
+
+            Notification.requestPermission().then(permission => {
+                if (permission === "granted") {
+                    navigator.serviceWorker.ready.then(registration => {
+                        registration.showNotification("🔔 Es hat geklingelt!", {
+                            body: "Jemand steht vor der Tür.",
+                            icon: "https://via.placeholder.com/128?text=🧁",
+                            badge: "https://via.placeholder.com/128?text=🧁",
+                            tag: "doorbell-alert",
+                            renotify: true,
+                            silent: isDeadlineActive,
+                            vibrate: isDeadlineActive ? [] : [200, 100, 200, 100, 200],
+                            data: { url: window.location.href },
+                            actions: [
+                                { action: "open", title: "🔓 Tür aufmachen" }
+                            ]
+                        }).then(() => {
+                            setTimeout(() => {
+                                registration.getNotifications({ tag: "doorbell-alert" }).then(notifications => {
+                                    notifications.forEach(n => n.close());
+                                });
+                            }, 60000);
+                        });
+                    });
+                }
+            });
+        }
+
+        function showWarningNotification() {
+            if (Notification.permission === "granted") {
+                navigator.serviceWorker.ready.then(registration => {
+                    registration.showNotification("⚠️ Automatik-Warnung", {
+                        body: "Die Tür-Automatik läuft in 5 Minuten ab.",
+                        tag: "deadline-warning",
+                        renotify: true,
+                        data: { url: window.location.href }
+                    });
+                });
+            }
+        }
+
+        function onDisconnected() {
+            updateStatus("❌ Getrennt. Versuche erneut...");
+            openBtn.disabled = true;
+            connectBtn.textContent = "Mit Haustür verbinden";
+
+            // Clear local state on disconnect
+            serverDeadline = 0;
+            updateCountdown();
+
+            // Attempt auto-reconnect
+            setTimeout(reconnect, 2000);
+        }
+
+        async function reconnect() {
+            if (!device) return;
+            try {
+                updateStatus("Erneutes Verbinden...");
+                await device.gatt.connect();
+                const service = await device.gatt.getPrimaryService(SERVICE_UUID);
+                latchChar = await service.getCharacteristic(LATCH_CHAR_UUID);
+                bellChar = await service.getCharacteristic(BELL_CHAR_UUID);
+                deadlineChar = await service.getCharacteristic(DEADLINE_CHAR_UUID);
+
+                await bellChar.startNotifications();
+                bellChar.addEventListener('characteristicvaluechanged', onBellNotification);
+                await deadlineChar.startNotifications();
+                deadlineChar.addEventListener('characteristicvaluechanged', onDeadlineNotification);
+
+                // Re-sync deadline state after connection is ready
+                const deadlineVal = await deadlineChar.readValue();
+                processDeadlineValue(deadlineVal);
+
+                openBtn.disabled = false;
+                connectBtn.textContent = "Verbindung trennen";
+                updateStatus("✅ Verbunden");
+            } catch (error) {
+                updateStatus("❌ Fehler beim erneuten Verbinden.");
+            }
+        }
+
+        connectBtn.addEventListener('click', () => {
+            if (device && device.gatt.connected) {
+                device.gatt.disconnect();
+            } else {
+                connect();
+            }
+        });
+
+        openBtn.addEventListener('click', triggerLatch);
+
+        document.getElementById('m30').addEventListener('click', () => changeDeadline(30));
+        document.getElementById('h1').addEventListener('click', () => changeDeadline(60));
+        document.getElementById('h2').addEventListener('click', () => changeDeadline(120));
+        document.getElementById('off').addEventListener('click', () => changeDeadline(0));
+    </script>
+</body>
+</html>

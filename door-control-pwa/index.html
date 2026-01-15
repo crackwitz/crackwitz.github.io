@@ -218,6 +218,39 @@
             }
         }
 
+        function onDeadlineNotification(event) {
+            processDeadlineValue(event.target.value);
+        }
+
+        function processDeadlineValue(data) {
+            if (data.byteLength >= 8) {
+                serverDeadline = data.getUint32(0);
+                serverNowOnUpdate = data.getUint32(4);
+                localNowOnUpdate = Date.now();
+                updateCountdown();
+            }
+        }
+
+        function updateCountdown() {
+            if (serverDeadline === 0) {
+                countdownDiv.textContent = "Automatik aus";
+                return;
+            }
+            const elapsedLocalSecs = (Date.now() - localNowOnUpdate) / 1000;
+            const currentServerTime = serverNowOnUpdate + elapsedLocalSecs;
+            const remaining = Math.max(0, serverDeadline - currentServerTime);
+
+            if (remaining <= 0) {
+                countdownDiv.textContent = "Automatik aus";
+            } else {
+                const h = Math.floor(remaining / 3600);
+                const m = Math.floor((remaining % 3600) / 60);
+                const s = Math.floor(remaining % 60);
+                countdownDiv.textContent = `Automatik aktiv: ${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+            }
+        }
+        setInterval(updateCountdown, 1000);
+
         async function requestWakeLock() {
             try {
                 if ('wakeLock' in navigator) {

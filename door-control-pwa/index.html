@@ -109,6 +109,7 @@
         let deadlineChar = null;
         let wakeLock = null;
         let isWriting = false;
+        let notificationTimeout = null;
 
         let serverDeadline = 0;
         let serverNowOnUpdate = 0;
@@ -334,10 +335,12 @@
                                 { action: "open", title: "🔓 Tür aufmachen" }
                             ]
                         }).then(() => {
-                            setTimeout(() => {
+                            if (notificationTimeout) clearTimeout(notificationTimeout);
+                            notificationTimeout = setTimeout(() => {
                                 registration.getNotifications({ tag: "doorbell-alert" }).then(notifications => {
                                     notifications.forEach(n => n.close());
                                 });
+                                notificationTimeout = null;
                             }, 60000);
                         });
                     });

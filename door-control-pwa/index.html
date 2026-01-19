@@ -110,6 +110,7 @@
         let wakeLock = null;
         let isWriting = false;
         let notificationTimeout = null;
+        let desiredConnectedState = false;
 
         let serverDeadline = 0;
         let serverNowOnUpdate = 0;
@@ -178,6 +179,7 @@
 
         async function connect() {
             try {
+                desiredConnectedState = true;
                 updateStatus("Gerät suchen...");
                 device = await navigator.bluetooth.requestDevice({
                     filters: [{ services: [SERVICE_UUID] }],
@@ -275,6 +277,7 @@
                 if (doorDevice) {
                     device = doorDevice;
                     device.addEventListener('gattserverdisconnected', onDisconnected);
+                    desiredConnectedState = true;
                     reconnect();
                 }
             }
@@ -362,7 +365,7 @@
         }
 
         function onDisconnected() {
-            updateStatus("❌ Getrennt. Versuche erneut...");
+            updateStatus("❌ Getrennt.");
             openBtn.disabled = true;
             connectBtn.textContent = "Mit Haustür verbinden";
 
@@ -370,13 +373,17 @@
             serverDeadline = 0;
             updateCountdown();
 
-            // Attempt auto-reconnect
-            setTimeout(reconnect, 2000);
+            // Attempt auto-reconnect only if we still want to be connected
+            if (desiredConnectedState) {
+                updateStatus("❌ Getrennt. Versuche erneut...");
+                setTimeout(reconnect, 2000);
+            }
         }
 
         async function reconnect() {
             if (!device) return;
             try {
+                desiredConnectedState = true;
                 updateStatus("Erneutes Verbinden...");
                 await device.gatt.connect();
                 const service = await device.gatt.getPrimaryService(SERVICE_UUID);
@@ -403,6 +410,7 @@
 
         connectBtn.addEventListener('click', () => {
             if (device && device.gatt.connected) {
+                desiredConnectedState = false;
                 device.gatt.disconnect();
             } else {
                 connect();
